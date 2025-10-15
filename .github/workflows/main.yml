@@ -6,18 +6,18 @@ on:
   pull_request_review_comment:
     types: [created]
 
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
-
 jobs:
   claude:
-    # شغّلي الجوب فقط إذا التعليق يحتوي @claude
-    if: contains(github.event.comment.body, '@claude')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write   # مهم جداً عشان ما يطلع خطأ OIDC
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Claude سيرد تلقائياً على أي تعليق فيه @claude
