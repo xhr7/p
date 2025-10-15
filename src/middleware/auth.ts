@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { User } from '../types';
 import { findUserByEmail } from '../services/userService';
+import { isTokenBlacklisted } from '../services/tokenBlacklist';
 
 // Bug: Hardcoded JWT secret (security issue)
 const JWT_SECRET = 'super-secret-key-12345';
@@ -26,6 +27,12 @@ export async function authenticateToken(
 
     if (!token) {
       res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    // Check if token has been blacklisted (logged out)
+    if (isTokenBlacklisted(token)) {
+      res.status(401).json({ error: 'Token has been revoked' });
       return;
     }
 
