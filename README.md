@@ -7,7 +7,7 @@ This is a minimal TypeScript + Express application **intentionally containing se
 This repository contains intentional security vulnerabilities, logic bugs, and code quality issues. **DO NOT** use this code in production or as a template for real applications.
 
 ## Features
-
+بببب
 - User registration and login (`/api/register`, `/api/login`)
 - JWT-based authentication with cookies
 - Protected home page at `/` (requires valid JWT)

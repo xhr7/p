@@ -1,7 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { createUser, findUserByEmail, validatePassword } from '../services/userService';
-import { generateToken } from '../middleware/auth';
+import { generateToken, authenticateToken } from '../middleware/auth';
 import { RegisterRequest, LoginRequest } from '../types';
+import { blacklistToken } from '../services/tokenBlacklist';
 
 const router = Router();
 
@@ -69,6 +70,24 @@ router.post('/login', (req: Request, res: Response) => {
     message: 'Login successful',
     user: { id: user.id, email: user.email, isVip: user.isVip }
   });
+});
+
+// Logout endpoint - requires authentication
+router.post('/logout', authenticateToken, (req: Request, res: Response) => {
+  const token = req.cookies.token;
+
+  if (!token) {
+    res.status(400).json({ error: 'No token provided' });
+    return;
+  }
+
+  // Add token to blacklist
+  blacklistToken(token);
+
+  // Clear the cookie
+  res.clearCookie('token');
+
+  res.json({ message: 'Logout successful' });
 });
 
 export default router;
