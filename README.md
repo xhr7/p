@@ -14,7 +14,7 @@ This repository contains intentional security vulnerabilities, logic bugs, and c
 - Price calculation API with discount logic (`/api/price`)
 - In-memory user storage (no external database required)
 
-## Getting Started
+## Getting Startedنننننننن
 
 ### Prerequisitesتتت
 
