@@ -1,52 +1,50 @@
-name: 'Assistant'
+name: Assistant
 
 on:
   workflow_call:
     inputs:
       additional_context:
-        type: 'string'
-        description: 'Any additional context from the request'
+        type: string
+        description: Any additional context from the request
         required: false
 
 concurrency:
-  group: '${{ github.workflow }}-assistant-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number }}'
+  group: ${{ github.workflow }}-assistant-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number }}
   cancel-in-progress: false
 
 defaults:
   run:
-    shell: 'bash'
+    shell: bash
 
 jobs:
   assistant:
-    runs-on: 'ibm-x86-64-small'
+    runs-on: ibm-x86-64-small
     permissions:
-      contents: 'read'
-      id-token: 'write'
-      issues: 'write'
-      pull-requests: 'write'
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: write
     steps:
-      # Checkout is needed when referencing repo content (optional here but kept for parity)
-      - name: 'Checkout repository'
-        uses: 'actions/checkout@v4'
+      # Checkout (احتفظنا به للتماثل مع بقية الملفات)
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      # لم يعد هناك حاجة لتنزيل MCP server الخاص بـ Bob
-      # احتفظنا بالخطوة كملاحظة، لكن أزلنا التنفيذ الفعلي لتقليل الالتباس.
-      - name: 'Note'
+      # ملاحظة فقط (ما فيه تنفيذ إضافي)
+      - name: Note
         run: |
           echo "Bob MCP server not required for Claude Assistant. Skipping MCP setup."
 
-      # === تشغيل Assistant مع Claude ===
-      # نجمع السياق ونبني برومبت طويل بنفس روح ملف Bob (Persona/Constraints/Workflow)
-      - name: 'Build prompt'
+      # بناء البرومبت الطويل
+      - name: Build prompt
         id: prompt
         env:
-          TITLE: '${{ github.event.pull_request.title || github.event.issue.title }}'
-          DESCRIPTION: '${{ github.event.pull_request.body || github.event.issue.body }}'
-          EVENT_NAME: '${{ github.event_name }}'
-          IS_PULL_REQUEST: '${{ !!github.event.pull_request }}'
-          ISSUE_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
-          REPOSITORY: '${{ github.repository }}'
-          ADDITIONAL_CONTEXT: '${{ inputs.additional_context }}'
+          TITLE: ${{ github.event.pull_request.title || github.event.issue.title }}
+          DESCRIPTION: ${{ github.event.pull_request.body || github.event.issue.body }}
+          EVENT_NAME: ${{ github.event_name }}
+          IS_PULL_REQUEST: ${{ !!github.event.pull_request }}
+          ISSUE_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          REPOSITORY: ${{ github.repository }}
+          ADDITIONAL_CONTEXT: ${{ inputs.additional_context }}
         run: |
           set -euo pipefail
           cat > full_prompt.txt <<'PROMPT'
@@ -137,7 +135,7 @@ jobs:
 
           ### B. Await Human Approval
 
-          - Clearly state: “Reply with `/approve` to proceed or `/deny` to stop.”  
+          - Clearly state: “Reply with `/approve` to proceed or `/deny` to stop.”
           - Since you cannot listen for events here, just state the next steps. Humans or other automations will follow up.
 
           ### C. (Optional) Execution via Humans/Automation
@@ -163,37 +161,37 @@ jobs:
           - The approval instruction line (`/approve` or `/deny`)
           PROMPT
 
-          # نطبّع الفراغات في المتغيرات حتى لا تكسر JSON
+          # تحويل المحتوى إلى JSON-safe string كقيمة output
           {
             echo "PROMPT=$(python - <<'PY'
-import os, json
+import json
 p = open('full_prompt.txt','r',encoding='utf-8').read()
 print(json.dumps(p))
 PY
 )"
-          } >> $GITHUB_OUTPUT
+          } >> "$GITHUB_OUTPUT"
 
-      - name: 'Call Claude (Anthropic Messages API)'
+      - name: Call Claude (Anthropic Messages API)
         id: call
         env:
-          ANTHROPIC_API_KEY: '${{ secrets.ANTHROPIC_API_KEY }}'
-          PROMPT_JSON: '${{ steps.prompt.outputs.PROMPT }}'
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PROMPT_JSON: ${{ steps.prompt.outputs.PROMPT }}
         run: |
           set -euo pipefail
 
-          # ابنِ جسم الطلب
+          # بناء جسم الطلب
           printf '%s' \
           "{\"model\":\"claude-3-5-sonnet-latest\",\"max_tokens\":1400,\"messages\":[{\"role\":\"user\",\"content\":${PROMPT_JSON}}]}" \
           > body.json
 
-          # نفّذ الطلب
+          # تنفيذ الطلب
           curl -s https://api.anthropic.com/v1/messages \
-            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "x-api-key: ${ANTHROPIC_API_KEY}" \
             -H "anthropic-version: 2023-06-01" \
             -H "content-type: application/json" \
             -d @body.json > resp.json
 
-          # استخرج كل النصوص فقط (بعض الردود قد تتضمن non-text blocks)
+          # استخراج النصوص فقط
           jq -r '
             if has("content") then
               .content | map(select(.type=="text") | .text) | join("\n\n")
@@ -202,15 +200,15 @@ PY
             end
           ' resp.json > out.txt
 
-          # fallback إذا ما فيه نص
+          # في حال عدم وجود مخرجات
           if [ ! -s out.txt ]; then
             echo "I could not generate a response. Please try again with more context." > out.txt
           fi
 
-      - name: 'Post Assistant reply'
-        uses: 'actions/github-script@v7'
+      - name: Post Assistant reply
+        uses: actions/github-script@v7
         with:
-          github-token: '${{ secrets.GITHUB_TOKEN || github.token }}'
+          github-token: ${{ secrets.GITHUB_TOKEN || github.token }}
           script: |
             const fs = require('fs');
             const body = fs.readFileSync('out.txt','utf8').trim() || 'No response.';
