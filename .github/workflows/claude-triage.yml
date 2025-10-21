@@ -1,68 +1,185 @@
-name: Claude Triage
+name: 'Triage'
 
 on:
   workflow_call:
+    inputs:
+      additional_context:
+        type: 'string'
+        description: 'Any additional context from the request'
+        required: false
 
-permissions:
-  contents: read
-  issues: read
-  pull-requests: read
+concurrency:
+  group: '${{ github.workflow }}-triage-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number }}'
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: 'bash'
 
 jobs:
   triage:
-    runs-on: ubuntu-latest
+    runs-on: 'ibm-x86-64-small'
+    timeout-minutes: 10
     outputs:
-      available_labels: ${{ steps.get_labels.outputs.available_labels }}
-      selected_labels: ${{ env.SELECTED_LABELS }}
+      available_labels: '${{ steps.get_labels.outputs.available_labels }}'
+      selected_labels: '${{ env.SELECTED_LABELS }}'
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+      issues: 'read'
+      pull-requests: 'read'
     steps:
-      - name: Get repository labels
-        id: get_labels
-        uses: actions/github-script@v7
+      - name: 'Get repository labels'
+        id: 'get_labels'
+        uses: 'actions/github-script@v7'
         with:
-          script: |
+          # NOTE: we intentionally do not use the given token. The default
+          # GITHUB_TOKEN provided by the action has enough permissions to read
+          # the labels.
+          script: |-
             const { data: labels } = await github.rest.issues.listLabelsForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
             });
-            const names = (labels||[]).map(l=>l.name).sort();
-            if (names.length === 0) core.setFailed('No labels found');
-            core.setOutput('available_labels', names.join(','));
 
-      - name: Choose labels with simple heuristics
-        if: ${{ steps.get_labels.outputs.available_labels != '' }}
-        shell: bash
+            if (!labels || labels.length === 0) {
+              core.setFailed('There are no issue labels in this repository.')
+            }
+
+            const labelNames = labels.map(label => label.name).sort();
+            core.setOutput('available_labels', labelNames.join(','));
+            core.info(`Found ${labelNames.length} labels: ${labelNames.join(', ')}`);
+            return labelNames;
+
+      # Checkout is needed when referencing a local action
+      - name: 'Checkout repository'
+        uses: 'actions/checkout@v4'
+        if: |-
+          ${{ steps.get_labels.outputs.available_labels != '' }}
+
+      # ✅ استبدال "bob-action" بنداء مباشر لواجهـة Claude
+      - name: 'Run issue analysis (Claude)'
+        id: 'claude_analysis'
+        if: |-
+          ${{ steps.get_labels.outputs.available_labels != '' }}
         env:
-          TITLE: ${{ github.event.issue.title || github.event.pull_request.title || '' }}
-          BODY: ${{ github.event.issue.body || github.event.pull_request.body || '' }}
-          LABELS: ${{ steps.get_labels.outputs.available_labels }}
-          GITHUB_ENV: ${{ env.GITHUB_ENV }}
-        run: |
-          pick=""
-          shopt -s nocasematch
-          if [[ "$TITLE$BODY" =~ (bug|error|exception|fail) ]] && [[ ",$LABELS," =~ ",bug," ]]; then pick="${pick:+$pick,}bug"; fi
-          if [[ "$TITLE$BODY" =~ (feat|feature|enhancement|improv) ]] && [[ ",$LABELS," =~ ",enhancement," ]]; then pick="${pick:+$pick,}enhancement"; fi
-          echo "SELECTED_LABELS=$pick" >> "$GITHUB_ENV"
+          # ⚠️ لا نمرّر أي GitHub token هنا (نص غير موثوق)
+          GITHUB_TOKEN: ''
+          ANTHROPIC_API_KEY: '${{ secrets.ANTHROPIC_API_KEY }}'
+          ISSUE_TITLE: '${{ github.event.issue.title }}'
+          ISSUE_BODY: '${{ github.event.issue.body }}'
+          AVAILABLE_LABELS: '${{ steps.get_labels.outputs.available_labels }}'
+          GITHUB_ENV: '${{ env.GITHUB_ENV }}'
+        run: |-
+          set -euo pipefail
 
-  apply:
-    runs-on: ubuntu-latest
-    needs: triage
-    if: ${{ needs.triage.outputs.selected_labels != '' }}
+          # نبني برومبت واضح يطلب CSV فقط من اللّيبلز المسموحة
+          cat > prompt.txt <<'PROMPT'
+          You are an issue triage assistant. Your task:
+          - Read the ISSUE TITLE and ISSUE BODY below.
+          - From the AVAILABLE LABELS list (comma-separated), choose all labels that best apply to this issue.
+          - Output ONLY a comma-separated list (CSV) of the chosen labels. No extra text.
+          - If none apply, output an empty string.
+
+          Strict rules:
+          - Use ONLY labels that appear in AVAILABLE LABELS.
+          - Output must be a single line CSV with no quotes and no spaces (e.g., bug,enhancement). Empty string if none.
+
+          AVAILABLE LABELS:
+          {{AVAILABLE_LABELS}}
+
+          ISSUE TITLE:
+          {{ISSUE_TITLE}}
+
+          ISSUE BODY:
+          {{ISSUE_BODY}}
+          PROMPT
+
+          # عوّض المتغيرات داخل البرومبت
+          sed -i "s/{{AVAILABLE_LABELS}}/${AVAILABLE_LABELS//\//\\/}/g" prompt.txt
+          sed -i "s/{{ISSUE_TITLE}}/${ISSUE_TITLE//\//\\/}/g" prompt.txt
+          sed -i "s/{{ISSUE_BODY}}/${ISSUE_BODY//\//\\/}/g" prompt.txt
+
+          # جهّز جسم الطلب لواجهة Claude (Messages API)
+          jq -n --arg p "$(cat prompt.txt)" \
+            '{
+              model: "claude-3-5-sonnet-latest",
+              max_tokens: 300,
+              messages: [{role:"user", content:$p}]
+            }' > body.json
+
+          # استدعاء كلود
+          curl -s https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d @body.json > resp.json
+
+          # استخرج كل النصوص (بعض الردود قد تتضمن non-text blocks)
+          jq -r '
+            if has("content") then
+              .content | map(select(.type=="text") | .text) | join("\n")
+            else
+              ""
+            end
+          ' resp.json > raw.txt
+
+          # نظّف الناتج: خليّه سطر واحد CSV بدون مسافات
+          csv="$(tr -d ' \r' < raw.txt | tr -d '\n')"
+
+          # فلترة أمان إضافية: اسمح فقط بالليبلز الموجودة مسبقًا
+          IFS=',' read -ra allowed <<< "$AVAILABLE_LABELS"
+          IFS=',' read -ra picked  <<< "$csv"
+          declare -A set; for a in "${allowed[@]}"; do set["$a"]=1; done
+          final=""
+          for p in "${picked[@]}"; do
+            [[ -n "$p" && -n "${set[$p]+x}" ]] && final="${final:+$final,}$p"
+          done
+
+          echo "SELECTED_LABELS=${final}" >> "$GITHUB_ENV"
+
+  label:
+    runs-on: 'ibm-x86-64-small'
+    needs:
+      - 'triage'
+    if: |-
+      ${{ needs.triage.outputs.selected_labels != '' }}
     permissions:
-      issues: write
-      pull-requests: write
+      contents: 'read'
+      issues: 'write'
+      pull-requests: 'write'
     steps:
-      - name: Apply labels
-        uses: actions/github-script@v7
+      - name: 'Apply labels'
+        env:
+          ISSUE_NUMBER: '${{ github.event.issue.number }}'
+          AVAILABLE_LABELS: '${{ needs.triage.outputs.available_labels }}'
+          SELECTED_LABELS: '${{ needs.triage.outputs.selected_labels }}'
+        uses: 'actions/github-script@v7'
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const labels = (process.env.SELECTED_LABELS||'').split(',').map(s=>s.trim()).filter(Boolean);
-            const issue_number = context.payload.issue?.number || context.payload.pull_request?.number;
-            if (labels.length>0) {
+          github-token: '${{ secrets.GITHUB_TOKEN || github.token }}'
+          script: |-
+            // Parse the available labels
+            const availableLabels = (process.env.AVAILABLE_LABELS || '').split(',')
+              .map((label) => label.trim())
+              .sort()
+
+            // Parse the label as a CSV, reject invalid ones - we do this just
+            // in case someone was able to prompt inject malicious labels.
+            const selectedLabels = (process.env.SELECTED_LABELS || '').split(',')
+              .map((label) => label.trim())
+              .filter((label) => availableLabels.includes(label))
+              .sort()
+
+            // Set the labels
+            const issueNumber = process.env.ISSUE_NUMBER;
+            if (selectedLabels && selectedLabels.length > 0) {
               await github.rest.issues.setLabels({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number,
-                labels
+                issue_number: issueNumber,
+                labels: selectedLabels,
               });
+              core.info(`Successfully set labels: ${selectedLabels.join(',')}`);
+            } else {
+              core.info(`Failed to determine labels to set. There may not be enough information in the issue or pull request.`)
             }
