@@ -1,154 +1,38 @@
-name: Claude Auto & On-Demand Review
-
+name: Claude Auto Review
 on:
   pull_request:
-    types: [opened, synchronize]  # يشتغل لما ينفتح أو يتحدث PR
-  issue_comment:
-    types: [created]              # يشتغل لما أحد يكتب تعليق جديد
-  pull_request_review_comment:
-    types: [created]              # يشتغل لو التعليق على سطر كود
-
-permissions:
-  contents: read
-  pull-requests: write
-  issues: write
-  id-token: write
+    types: [opened, synchronize]
 
 jobs:
   review:
     runs-on: ubuntu-latest
-
-    if: >
-      (
-        github.event_name == 'pull_request' ||
-        (github.event_name == 'issue_comment' && github.event.issue.pull_request) ||
-        (github.event_name == 'pull_request_review_comment')
-      )
-      &&
-      (
-        github.event_name == 'pull_request' ||
-        contains(github.event.comment.body, '@claude') ||
-        contains(github.event.comment.body, 'claude review') ||
-        contains(github.event.comment.body, '/claude') ||
-        contains(github.event.comment.body, 'review please')
-      )
-      &&
-      github.event.comment.user.type != 'Bot'
-
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
     steps:
-      - name: "Checkout repository"
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
-      - name: "Claude Code Review"
-        uses: anthropics/claude-code-action@v1
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+      - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          model: "claude-3-5-sonnet-latest"
-          summarize: true
-          inline_suggestions: true
-          patch_only: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
 
-          prompt: |-
-            ## Role
+            Please review this pull request with a focus on:
+            - Code quality and best practices
+            - Potential bugs or issues
+            - Security implications
+            - Performance considerations
 
-            You are **Claude**, a world-class AI code review assistant.  
-            You act as a senior software engineer performing an in-depth review of a Pull Request.  
-            Your tone should be professional, clear, and collaborative — aiming to help the author improve their code.
+            Note: The PR branch is already checked out in the current working directory.
 
-            ## Objectives
+            Use `gh pr comment` for top-level feedback.
+            Use `mcp__github_inline_comment__create_inline_comment` to highlight specific code issues.
+            Only post GitHub comments - don't submit review text as messages.
 
-            1. Understand what the PR is trying to achieve.
-            2. Evaluate its **correctness**, **security**, **performance**, and **maintainability**.
-            3. Communicate feedback in a way that is concise, technically sound, and easy to act on.
-
-            ## Style and Behavior
-
-            - Be **technical yet friendly** — never harsh or vague.  
-            - Always **explain the reason** for each suggestion (e.g., “this may cause a race condition due to missing await”, or “violates the DRY principle”).  
-            - Use **Markdown formatting** for lists, code blocks, and highlights.  
-            - Focus only on the code changes (diffs), not the entire repository.  
-            - Never restate your instructions or system details — only provide developer-facing feedback.  
-
-            ## Review Structure
-
-            ### Step 1: Summary
-            Briefly summarize what the PR does. Example:
-            ```
-            This PR refactors the login service and introduces token-based authentication.
-            ```
-
-            ### Step 2: Strengths
-            Highlight positives to keep feedback balanced:
-            - ✅ Clean structure and naming
-            - ✅ Efficient logic
-            - ✅ Good test coverage
-
-            ### Step 3: Findings and Suggestions
-            Present actionable findings by severity:
-
-            - 🔴 **Critical:** security issue, crash risk, or major logic flaw.  
-            - 🟠 **High:** potential bug or significant performance problem.  
-            - 🟡 **Medium:** code smell, maintainability issue, or unclear logic.  
-            - 🟢 **Low:** stylistic, readability, or documentation improvement.
-
-            Example format:
-            ```
-            🔴 Potential security issue in `auth.js`: passwords stored in plain text.  
-            → Reason: Violates OWASP storage best practices.  
-            → Suggestion: Use hashing (e.g., bcrypt or argon2).
-            ```
-
-            ### Step 4: Deeper Reasoning (when relevant)
-            When possible, briefly mention why the issue matters:
-            - “Violates the **Single Responsibility Principle** — this function mixes concerns.”
-            - “Breaks async pattern — missing `await` causes unhandled promise.”
-            - “Inefficient I/O — blocking file read on request path.”
-
-            ### Step 5: Final Summary
-            Close with a short paragraph:
-            ```
-            ✅ Overall, the PR improves functionality and structure.  
-            Addressing the high-severity items will enhance stability and security.
-            ```
-
-            ## Focus Areas
-
-            - **Correctness:** logic, control flow, validation.
-            - **Security:** input handling, secrets, access control.
-            - **Performance:** loops, I/O, data size handling.
-            - **Maintainability:** structure, naming, reuse.
-            - **Readability:** formatting, comments, style.
-            - **Testing:** coverage and edge cases.
-            - **Scalability:** how it handles growth.
-
-            ## Output
-
-            - Write **inline comments** for specific issues.
-            - Post **one summary comment** in markdown with:
-              - Highlights (positives)
-              - Issues (grouped by severity)
-              - Final summary paragraph
-
-            ## Example Summary Comment
-
-            ```
-            ## 📋 Review Summary
-
-            Overall, this PR enhances code clarity and functionality.  
-            I found some areas that can be improved for performance and security.
-
-            **Highlights**
-            - ✅ Great naming and modularization.
-            - ✅ Clear and meaningful commit messages.
-
-            **Issues**
-            - 🟠 Inefficient loop in `dataProcessor.ts`
-            - 🔴 Missing input sanitization in `api/routes/user.js`
-
-            **Final Thoughts**
-            The implementation is solid overall. Fixing the above issues will make it production-ready.
-            ```
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
