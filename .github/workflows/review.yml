@@ -2,7 +2,10 @@ name: "Claude PR Review"
 
 on:
   issue_comment:
-    types: [created]   # يشتغل لما أحد يكتب تعليق جديد
+    types: [created]    # تعليق في تبويب Conversation
+  pull_request_review_comment:
+    types: [created]    # تعليق على سطر كود داخل diff
+  workflow_dispatch:     # تشغيل يدوي من Actions
 
 permissions:
   contents: read
@@ -11,22 +14,44 @@ permissions:
 
 jobs:
   review:
-    if: >
-      github.event.issue.pull_request &&                # لازم يكون داخل PR
-      contains(github.event.comment.body, '@claude') && # يشتغل فقط عند مناداة @claude
-      github.event.comment.user.type != 'Bot'           # يتجاهل تعليقات البوتات
     runs-on: ubuntu-latest
+    # نفعّل الجوب فقط إذا:
+    # - الحدث تعليق على PR (مو Issue عادي)
+    # - والتعليق يحتوي مناداة @claude (نغطي كذا كيس)
+    # - والمعلّق مو Bot
+    if: >
+      (
+        (github.event_name == 'issue_comment' && github.event.issue.pull_request) ||
+        (github.event_name == 'pull_request_review_comment')
+      )
+      && (
+        contains(github.event.comment.body, '@claude') ||
+        contains(github.event.comment.body, '@Claude') ||
+        contains(github.event.comment.body, '/claude') ||
+        contains(github.event.comment.body, 'claude review')
+      )
+      && github.event.comment.user.type != 'Bot'
     steps:
-      - name: "Checkout repository"
+      - name: Debug event
+        run: |
+          echo "event_name: ${{ github.event_name }}"
+          echo "repo:       ${{ github.repository }}"
+          echo "actor:      ${{ github.actor }}"
+          echo "comment:    ${{ github.event.comment.body }}"
+          echo "issue.number (if any): ${{ github.event.issue.number }}"
+          echo "pr.number (if review comment): ${{ github.event.pull_request.number }}"
+
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: "Claude Review Triggered"
+      - name: Claude Review Triggered
         uses: anthropics/claude-code-action@v1
         id: claude
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          PULL_REQUEST_NUMBER: ${{ github.event.issue.number }}
+          # ناخذ رقم الـ PR من المصدر الصحيح حسب نوع الحدث
+          PULL_REQUEST_NUMBER: ${{ github.event_name == 'issue_comment' && github.event.issue.number || github.event.pull_request.number }}
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           model: "claude-3-5-sonnet-latest"
