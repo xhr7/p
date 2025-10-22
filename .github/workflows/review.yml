@@ -25,24 +25,21 @@ jobs:
       id-token: 'write'
       issues: 'write'
       pull-requests: 'write'
+
     steps:
       - name: 'Checkout repository'
         uses: 'actions/checkout@v4'
 
-      # لا حاجة لتنزيل MCP server لكلود
-      # لكنه ممكن يبقى هنا للاتساق فقط
-      - name: 'Download and install GitHub MCP server'
-        run: |
-          curl -L -o github-mcp-server.tar.gz https://github.com/github/github-mcp-server/releases/download/v0.17.1/github-mcp-server_Linux_x86_64.tar.gz
-          tar -xzf github-mcp-server.tar.gz
-          chmod +x ./github-mcp-server
-          rm github-mcp-server.tar.gz
+      # ✅ لا نحتاج تنزيل MCP server هنا
+      # ❌ احذفنا خطوة "Download and install GitHub MCP server"
 
       - name: 'Run pull request review with Claude'
-        uses: 'anthropics/claude-code-action@v1'
         id: 'claude_pr_review'
+        uses: 'anthropics/claude-code-action@v1'
         env:
+          # يفضل تمرير توكن GitHub الافتراضي
           GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
+          # هذه قيم إضافية إن حبيتي توفرينها في البرومبت – مو ضرورية للعمل
           ISSUE_TITLE: '${{ github.event.pull_request.title || github.event.issue.title }}'
           ISSUE_BODY: '${{ github.event.pull_request.body || github.event.issue.body }}'
           PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
@@ -54,21 +51,7 @@ jobs:
           summarize: true
           inline_suggestions: true
           patch_only: true
-          # focus: security
 
-          settings: |-
-            {
-              "coreTools": [
-                "run_shell_command(cat)",
-                "run_shell_command(echo)",
-                "run_shell_command(grep)",
-                "run_shell_command(head)",
-                "run_shell_command(tail)",
-                "run_shell_command(ls)",
-                "run_shell_command(find)",
-                "attempt_completion"
-              ]
-            }
 
           prompt: |-
             ## Role
