@@ -1,3 +1,3 @@
 function canAccess(user) {
-  return user.isAdmin;
-}
+  return Boolean(user.isAdmin);
+ }
